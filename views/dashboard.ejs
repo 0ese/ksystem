@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JX Dashboard</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="page" style="padding-top: 24px;">
+      <div style="width: 1100px; max-width: 100%;">
+        <div class="row" style="align-items: center; justify-content: space-between; margin-bottom: 16px;">
+          <div class="row" style="align-items: center; gap: 12px;">
+            <div class="logo-wrap" style="width: 60px; height: 60px; border-radius: 16px; margin: 0;">
+              <div class="logo"></div>
+            </div>
+            <div>
+              <h2 style="margin: 0;">JX Dashboard</h2>
+              <p class="muted" style="margin: 2px 0 0;">PIN + 2FA protected · Prefix <span class="code"><%= settings.prefix %></span></p>
+            </div>
+          </div>
+          <button id="logout" class="btn btn-ghost">Logout</button>
+        </div>
+
+        <div class="tabs" style="margin-bottom: 14px;">
+          <div class="tab active" data-tab="tab-dashboard">Dashboard</div>
+          <div class="tab" data-tab="tab-keys">Keys</div>
+          <div class="tab" data-tab="tab-settings">Settings</div>
+        </div>
+
+        <div id="tab-dashboard" class="panel">
+          <div class="stat-grid">
+            <div class="stat">
+              <small>Total Generated</small>
+              <strong id="stat-total">0</strong>
+            </div>
+            <div class="stat">
+              <small>Active Keys</small>
+              <strong id="stat-active">0</strong>
+            </div>
+            <div class="stat">
+              <small>Pending Requests</small>
+              <strong id="stat-requests">0</strong>
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-keys" class="panel" style="display: none;">
+          <div class="tabs" style="margin-bottom: 12px;">
+            <div class="tab active" data-sub="request">Request Key</div>
+            <div class="tab" data-sub="list">Keys List</div>
+            <div class="tab" data-sub="unused">Unused Keys</div>
+            <div class="tab" data-sub="generate">Generate Key</div>
+          </div>
+
+          <div data-subpanel="request">
+            <label>HWID</label>
+            <input id="req-hwid" placeholder="User HWID / unique identifier" />
+            <button id="req-btn" class="btn btn-primary" style="margin-top: 10px;">Request Key (auto-approve)</button>
+            <p class="muted" style="margin-top: 8px;">Requests auto-expire after 20 minutes of inactivity.</p>
+          </div>
+
+          <div data-subpanel="list" style="display: none;">
+            <div class="row" style="align-items: center; margin-bottom: 10px;">
+              <select id="filter">
+                <option value="all">All</option>
+                <option value="active">Active</option>
+                <option value="free">Free</option>
+                <option value="premium">Premium</option>
+                <option value="expired">Expired</option>
+                <option value="unused">Unused</option>
+              </select>
+              <button id="refresh" class="btn btn-ghost">Refresh</button>
+            </div>
+            <div style="overflow: auto;">
+              <table class="table" id="keys-table">
+                <thead>
+                  <tr>
+                    <th>Key</th>
+                    <th>HWID</th>
+                    <th>Tier</th>
+                    <th>Expires</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div data-subpanel="unused" style="display: none;">
+            <div class="row" style="align-items: center; margin-bottom: 10px;">
+              <button id="refresh-unused" class="btn btn-ghost">Refresh</button>
+            </div>
+            <div style="overflow: auto;">
+              <table class="table" id="unused-table">
+                <thead>
+                  <tr>
+                    <th>Key</th>
+                    <th>HWID</th>
+                    <th>Tier</th>
+                    <th>Expires</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div data-subpanel="generate" style="display: none;">
+            <div class="two-col grid">
+              <div>
+                <label>HWID (optional for premium/free)</label>
+                <input id="gen-hwid" placeholder="Leave blank for unbound" />
+              </div>
+              <div>
+                <label>Tier</label>
+                <select id="gen-tier">
+                  <option value="premium">Premium</option>
+                  <option value="free">Free</option>
+                </select>
+              </div>
+            </div>
+            <label>Expiration</label>
+            <div class="row">
+              <button class="btn btn-ghost exp" data-hours="12">12h</button>
+              <button class="btn btn-ghost exp" data-hours="24">24h</button>
+              <button class="btn btn-ghost exp" data-hours="24">1d</button>
+              <button class="btn btn-ghost exp" data-hours="720">1m</button>
+              <button class="btn btn-ghost exp" data-hours="8760">1y</button>
+              <button class="btn btn-ghost exp" data-hours="87600">10y</button>
+              <button class="btn btn-ghost exp" data-hours="lifetime">Lifetime</button>
+            </div>
+            <label>Custom Hours</label>
+            <input id="gen-hours" type="number" min="1" placeholder="e.g., 48 for 2 days" />
+            <button id="gen-btn" class="btn btn-primary" style="margin-top: 12px;">Generate Key</button>
+          </div>
+        </div>
+
+        <div id="tab-settings" class="panel" style="display: none;">
+          <div class="two-col grid">
+            <div>
+              <label>Key Prefix</label>
+              <input id="set-prefix" value="<%= settings.prefix %>" />
+            </div>
+            <div>
+              <label>Default Checkpoints</label>
+              <input id="set-checkpoints" type="number" min="1" value="<%= settings.checkpoints %>" />
+            </div>
+            <div>
+              <label>Default Expiration (hours)</label>
+              <input id="set-exp" type="number" min="1" value="<%= settings.expirationHours %>" />
+            </div>
+            <div>
+              <label>Keyless Mode</label>
+              <div class="row">
+                <label class="muted"><input id="set-keyless" type="checkbox" <%= settings.keyless ? 'checked' : '' %> /> Enable</label>
+              </div>
+            </div>
+          </div>
+          <button id="save-settings" class="btn btn-primary" style="margin-top: 12px;">Save Settings</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+      const token = localStorage.getItem("jx_token");
+      const toast = (msg) => {
+        const el = document.getElementById("toast");
+        el.textContent = msg;
+        el.classList.add("show");
+        setTimeout(() => el.classList.remove("show"), 2200);
+      };
+      if (!token) {
+        window.location.href = "/login";
+      }
+
+      // Tabs
+      document.querySelectorAll(".tab").forEach((el) => {
+        el.addEventListener("click", () => {
+          const parentTabs = el.parentElement;
+          const isSub = parentTabs.dataset.subset === "true";
+          parentTabs.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+          el.classList.add("active");
+
+          if (parentTabs.parentElement.id === "tab-keys") {
+            const sub = el.dataset.sub;
+            document.querySelectorAll("[data-subpanel]").forEach((p) => (p.style.display = p.dataset.subpanel === sub ? "block" : "none"));
+          } else {
+            const tabId = el.dataset.tab;
+            document.querySelectorAll("[id^='tab-']").forEach((p) => (p.style.display = p.id === tabId ? "block" : "none"));
+          }
+        });
+      });
+
+      // Stats
+      async function loadStats() {
+        try {
+          const res = await fetch("/api/jx/dashboard/metrics", { headers: { Authorization: "Bearer " + token } });
+          const data = await res.json();
+          if (data.ok) {
+            document.getElementById("stat-total").textContent = data.stats.totalGenerated;
+            document.getElementById("stat-active").textContent = data.stats.activeKeys;
+            document.getElementById("stat-requests").textContent = data.stats.requestCount;
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      // Requests
+      document.getElementById("req-btn").onclick = async () => {
+        const hwid = document.getElementById("req-hwid").value.trim();
+        if (!hwid) return toast("Enter HWID");
+        try {
+          const res = await fetch("/api/jx/keys/request", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ hwid }),
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.message || "Failed");
+          toast(`Key issued: ${data.key}`);
+          loadStats();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+
+      // Keys list
+      async function loadKeys() {
+        const filter = document.getElementById("filter").value;
+        try {
+          const res = await fetch("/api/jx/keys?filter=" + encodeURIComponent(filter), {
+            headers: { Authorization: "Bearer " + token },
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.message || "Failed");
+          const tbody = document.querySelector("#keys-table tbody");
+          tbody.innerHTML = "";
+          data.keys.forEach((k) => {
+            const tr = document.createElement("tr");
+            const exp = k.expiresAt ? new Date(k.expiresAt).toLocaleString() : "lifetime";
+            tr.innerHTML = `
+              <td><span class="code">${k.key}</span></td>
+              <td>${k.hwid}</td>
+              <td><span class="pill ${k.tier === "premium" ? "success" : ""}">${k.tier}</span></td>
+              <td>${exp}</td>
+              <td><span class="pill ${k.status === "active" ? "success" : "danger"}">${k.status}</span></td>
+              <td class="row" style="gap:6px;">
+                <button class="btn btn-ghost" data-act="delete" data-key="${k.key}">Delete</button>
+              </td>
+            `;
+            tbody.appendChild(tr);
+          });
+        } catch (err) {
+          toast(err.message);
+        }
+      }
+      async function deleteKey(key) {
+        try {
+          const res = await fetch("/api/jx/keys/" + encodeURIComponent(key), {
+            method: "DELETE",
+            headers: { Authorization: "Bearer " + token },
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error("Delete failed");
+          toast("Deleted");
+          loadKeys();
+          loadUnused();
+          loadStats();
+        } catch (err) {
+          toast(err.message);
+        }
+      }
+      // Unused list
+      async function loadUnused() {
+        try {
+          const res = await fetch("/api/jx/keys?filter=unused", {
+            headers: { Authorization: "Bearer " + token },
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.message || "Failed");
+          const tbody = document.querySelector("#unused-table tbody");
+          tbody.innerHTML = "";
+          data.keys.forEach((k) => {
+            const tr = document.createElement("tr");
+            const exp = k.expiresAt ? new Date(k.expiresAt).toLocaleString() : "lifetime";
+            tr.innerHTML = `
+              <td><span class="code">${k.key}</span></td>
+              <td>${k.hwid || "unbound"}</td>
+              <td>${k.tier}</td>
+              <td>${exp}</td>
+              <td><span class="pill ${k.status === "active" ? "success" : "danger"}">${k.status}</span></td>
+              <td>
+                <button class="btn btn-ghost" data-copy="${k.key}">Copy</button>
+                <button class="btn btn-ghost danger" data-del="${k.key}">Delete</button>
+              </td>
+            `;
+            tr.querySelector("[data-copy]").onclick = () => navigator.clipboard.writeText(k.key).then(() => toast("Copied"));
+            tr.querySelector("[data-del]").onclick = () => deleteKey(k.key);
+            tbody.appendChild(tr);
+          });
+        } catch (err) {
+          toast(err.message);
+        }
+      }
+      document.getElementById("refresh").onclick = loadKeys;
+      document.getElementById("refresh-unused").onclick = loadUnused;
+
+      document.querySelector("#keys-table tbody").onclick = async (e) => {
+        const btn = e.target.closest("button");
+        if (!btn) return;
+        const key = btn.dataset.key;
+        if (btn.dataset.act === "delete") {
+          deleteKey(key);
+        }
+      };
+
+      // Generate
+      document.querySelectorAll(".exp").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          document.getElementById("gen-hours").value = btn.dataset.hours;
+        })
+      );
+      document.getElementById("gen-btn").onclick = async () => {
+        const hwid = document.getElementById("gen-hwid").value.trim();
+        const tier = document.getElementById("gen-tier").value;
+        const hours = document.getElementById("gen-hours").value.trim() || undefined;
+        try {
+          const res = await fetch("/api/jx/keys/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+            body: JSON.stringify({ hwid, tier, hours }),
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.message || "Failed");
+          toast("Generated " + data.key);
+          loadKeys();
+          loadStats();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+
+      // Settings
+      document.getElementById("save-settings").onclick = async () => {
+        const prefix = document.getElementById("set-prefix").value.trim();
+        const checkpoints = document.getElementById("set-checkpoints").value;
+        const expirationHours = document.getElementById("set-exp").value;
+        const keyless = document.getElementById("set-keyless").checked;
+        try {
+          const res = await fetch("/api/jx/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+            body: JSON.stringify({ prefix, checkpoints, expirationHours, keyless }),
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error("Failed to save");
+          toast("Saved");
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+
+      // Auth guard
+      document.getElementById("logout").onclick = () => {
+        localStorage.removeItem("jx_token");
+        window.location.href = "/login";
+      };
+
+      // Init
+      loadStats();
+      loadKeys();
+      loadUnused();
+    </script>
+  </body>
+</html>

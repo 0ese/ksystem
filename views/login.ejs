@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JX Dashboard Login</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="page">
+      <div class="card" style="width: 420px; max-width: 100%;">
+        <div class="logo-wrap" style="margin-bottom: 12px;">
+          <div class="logo"></div>
+        </div>
+        <h2 class="center" style="margin-bottom: 6px;">JX Dashboard</h2>
+        <p class="center muted" style="margin-bottom: 18px;">Step 1: PIN → Step 2: 2FA</p>
+
+        <label for="pin">PIN</label>
+        <input id="pin" type="password" placeholder="Enter PIN" />
+        <button id="sendPin" class="btn btn-primary" style="width: 100%; margin-top: 12px;">Login</button>
+
+        <div id="step2" style="display: none; margin-top: 12px;">
+          <label for="code">2FA Code (sent to Discord)</label>
+          <input id="code" type="text" placeholder="6-digit code" />
+          <button id="verify" class="btn btn-primary" style="width: 100%; margin-top: 12px;">Verify & Continue</button>
+          <p class="muted" id="expires" style="text-align: center; margin-top: 8px;"></p>
+        </div>
+
+        <p class="muted" style="margin-top: 14px; font-size: 13px;">
+          After login, your session token is stored locally and expires in 24h.
+        </p>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+      const toast = (msg) => {
+        const el = document.getElementById("toast");
+        el.textContent = msg;
+        el.classList.add("show");
+        setTimeout(() => el.classList.remove("show"), 2500);
+      };
+
+      const sendPinBtn = document.getElementById("sendPin");
+      const verifyBtn = document.getElementById("verify");
+      const step2 = document.getElementById("step2");
+      const expiresLabel = document.getElementById("expires");
+      let nonce = null;
+      let countdown = null;
+
+      function startCountdown(ts) {
+        clearInterval(countdown);
+        const tick = () => {
+          const diff = ts - Date.now();
+          if (diff <= 0) {
+            expiresLabel.textContent = "Code expired. Request again.";
+            clearInterval(countdown);
+            return;
+          }
+          const m = Math.floor(diff / 60000);
+          const s = Math.floor((diff % 60000) / 1000);
+          expiresLabel.textContent = `Expires in ${m}m ${s.toString().padStart(2, "0")}s`;
+        };
+        tick();
+        countdown = setInterval(tick, 1000);
+      }
+
+      sendPinBtn.onclick = async () => {
+        const pin = document.getElementById("pin").value.trim();
+        if (!pin) return toast("Enter PIN first");
+        sendPinBtn.disabled = true;
+        try {
+          const res = await fetch("/api/jx/auth/pin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pin }),
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.message || "PIN invalid");
+          nonce = data.nonce;
+          step2.style.display = "block";
+          startCountdown(data.expiresAt);
+          toast("Code sent to Discord webhook");
+        } catch (err) {
+          toast(err.message);
+        } finally {
+          sendPinBtn.disabled = false;
+        }
+      };
+
+      verifyBtn.onclick = async () => {
+        const code = document.getElementById("code").value.trim();
+        if (!nonce) return toast("Request a code first");
+        if (!code) return toast("Enter the 2FA code");
+        verifyBtn.disabled = true;
+        try {
+          const res = await fetch("/api/jx/auth/2fa", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ nonce, code }),
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.message || "Invalid/expired code");
+          localStorage.setItem("jx_token", data.token);
+          toast("Logged in");
+          setTimeout(() => (window.location.href = "/dashboard"), 800);
+        } catch (err) {
+          toast(err.message);
+        } finally {
+          verifyBtn.disabled = false;
+        }
+      };
+    </script>
+  </body>
+</html>

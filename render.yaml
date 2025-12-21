@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: linkvertise-test
+    env: node
+    buildCommand: npm install
+    startCommand: node app.js
+    envVars:
+      - key: LINKVERTISE_ANTI_BYPASS_TOKEN
+        value: cd15534581c81cc4151c9487aca4197c72727153eca4445f38a6a690f976e846
+      - key: LINKVERTISE_API_CODE
+        value: "1334688"
+      - key: BASE_URL
+        value: "https://getjx.onrender.com"
