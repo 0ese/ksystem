@@ -21,6 +21,48 @@ app.set("views", path.join(__dirname, "views"));
 app.set("trust proxy", 1);
 
 const rateBuckets = new Map(); // ip -> { count, ts }
+
+function resolveIp(req) {
+  return (req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim() || "anon";
+}
+
+function issueVerifyNonce(hwid, ip) {
+  const nonce = crypto.randomBytes(24).toString("hex");
+  verifyNonces.set(nonce, { hwid, ip, createdAt: Date.now() });
+  return nonce;
+}
+
+function recordVerifyFailure(ip, hwid) {
+  const now = Date.now();
+  const ipEntry = verifyFailuresIp.get(ip) || { count: 0, banUntil: 0 };
+  if (ipEntry.banUntil && ipEntry.banUntil <= now) {
+    ipEntry.count = 0;
+    ipEntry.banUntil = 0;
+  }
+  ipEntry.count += 1;
+  if (ipEntry.count >= VERIFY_FAIL_LIMIT) {
+    ipEntry.banUntil = now + VERIFY_BAN_DURATION;
+    ipEntry.count = 0;
+  }
+  verifyFailuresIp.set(ip, ipEntry);
+
+  const hwEntry = verifyFailuresHwid.get(hwid) || { count: 0, banUntil: 0 };
+  if (hwEntry.banUntil && hwEntry.banUntil <= now) {
+    hwEntry.count = 0;
+    hwEntry.banUntil = 0;
+  }
+  hwEntry.count += 1;
+  if (hwEntry.count >= VERIFY_FAIL_LIMIT) {
+    hwEntry.banUntil = now + VERIFY_BAN_DURATION;
+    hwEntry.count = 0;
+  }
+  verifyFailuresHwid.set(hwid, hwEntry);
+}
+
+function clearVerifyFailures(ip, hwid) {
+  verifyFailuresIp.delete(ip);
+  verifyFailuresHwid.delete(hwid);
+}
 const warnings = new Map(); // ip -> count
 const blacklist = new Map(); // ip -> banUntil
 const RATE_LIMIT = { windowMs: 60 * 1000, limit: 120 };
@@ -158,6 +200,9 @@ const pending2fa = new Map(); // nonce -> { code, expiresAt }
 const sessions = new Map(); // token -> { user, expiresAt }
 const cpSessions = new Map(); // hwid -> { hwid, checkpoint, service, start, nonce, rid }
 const cpWarnings = new Map(); // ip -> { count, banUntil }
+const verifyFailuresIp = new Map(); // ip -> { count, banUntil }
+const verifyFailuresHwid = new Map(); // hwid -> { count, banUntil }
+const verifyNonces = new Map(); // nonce -> { hwid, ip, createdAt }
 
 const REQUEST_TTL = 20 * 60 * 1000;
 const SESSION_TTL = 60 * 60 * 1000; // 1 hour
@@ -180,6 +225,12 @@ const EXPIRATION_HOURS = () => {
 
 const BYPASS_BAN_AFTER = 3;
 const BYPASS_BAN_DURATION = 30 * 60 * 1000; // 30 minutes
+const VERIFY_FAIL_LIMIT = 6;
+const VERIFY_BAN_DURATION = 30 * 60 * 1000; // 30 minutes
+const VERIFY_NONCE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const ALLOWED_EXECUTORS = new Set(
+  (process.env.ALLOWED_EXECUTORS || "Synapse X,KRNL,ScriptWare,Fluxus,Electron,Delta,Arceus X,Solara,Trigon").split(",").map((s) => s.trim())
+);
 
 function getBaseUrl(req) {
   if (req) {
@@ -331,6 +382,13 @@ async function cleanup() {
   // expire sessions
   for (const [token, data] of sessions.entries()) {
     if (data.expiresAt <= now) sessions.delete(token);
+  }
+
+  // expire verify nonces
+  for (const [nonce, data] of verifyNonces.entries()) {
+    if (data.createdAt + VERIFY_NONCE_WINDOW_MS <= now) {
+      verifyNonces.delete(nonce);
+    }
   }
 }
 setInterval(cleanup, 60 * 1000);
@@ -964,6 +1022,8 @@ app.post("/api/jx/keys/request", async (req, res) => {
   let existing = existingMem;
   if (!existing && useDb) existing = await loadExistingKeyForHwid(hwid);
   if (existing) {
+    const ip = resolveIp(req);
+    const verifyNonce = issueVerifyNonce(hwid, ip);
     return res.json({
       ok: true,
       requestId: null,
@@ -972,6 +1032,7 @@ app.post("/api/jx/keys/request", async (req, res) => {
       tier: existing.tier,
       expiresAt: existing.expiresAt,
       reused: true,
+      verifyNonce,
     });
   }
 
@@ -1008,7 +1069,9 @@ app.post("/api/jx/keys/claim", async (req, res) => {
   requests.delete(rid);
   if (useDb) dbDelete(mongoCfg.colRequests, rid);
   const record = await generateKey({ hwid, tier: "free", hours: settings.expirationHours });
-  res.json({ ok: true, key: record.key, bindProof: record.bindProof, expiresAt: record.expiresAt, tier: record.tier });
+  const ip = resolveIp(req);
+  const verifyNonce = issueVerifyNonce(hwid, ip);
+  res.json({ ok: true, key: record.key, bindProof: record.bindProof, verifyNonce, expiresAt: record.expiresAt, tier: record.tier });
 });
 
 // Verify key (Roblox)
@@ -1016,8 +1079,34 @@ app.post("/api/jx/keys/verify", async (req, res) => {
   const hwid = (req.body.hwid || "").trim();
   const key = (req.body.key || "").trim();
   const bindProof = (req.body.bindProof || "").trim();
+  const verifyNonce = (req.body.verifyNonce || "").trim();
+  const executor = (req.headers["x-executor"] || req.body.executor || "").trim();
+  const ip = resolveIp(req);
 
   await cleanup();
+
+  // ban check
+  const ipBan = verifyFailuresIp.get(ip);
+  if (ipBan?.banUntil && ipBan.banUntil > Date.now()) {
+    return res.status(429).json({ ok: false, valid: false, message: "Too many failed attempts (IP). Cooldown active." });
+  }
+  const hwBan = verifyFailuresHwid.get(hwid);
+  if (hwBan?.banUntil && hwBan.banUntil > Date.now()) {
+    return res.status(429).json({ ok: false, valid: false, message: "Too many failed attempts (HWID). Cooldown active." });
+  }
+
+  // executor gate
+  if (!executor || !ALLOWED_EXECUTORS.has(executor)) {
+    recordVerifyFailure(ip, hwid);
+    return res.status(400).json({ ok: false, valid: false, message: "Unsupported executor", code: "executor_blocked" });
+  }
+
+  // nonce validation
+  const nonceRec = verifyNonces.get(verifyNonce || "");
+  if (!verifyNonce || !nonceRec || nonceRec.hwid !== hwid || nonceRec.ip !== ip || nonceRec.createdAt + VERIFY_NONCE_WINDOW_MS <= Date.now()) {
+    recordVerifyFailure(ip, hwid);
+    return res.status(400).json({ ok: false, valid: false, message: "Verify nonce invalid/expired", code: "nonce_invalid" });
+  }
 
   if (settings.keyless) {
     return res.json({ ok: true, valid: true, mode: "keyless" });
@@ -1032,9 +1121,13 @@ app.post("/api/jx/keys/verify", async (req, res) => {
     return res.json({ ok: false, valid: false, message: "Key not found" });
   }
   if (!record.bindProof) {
+    verifyNonces.delete(verifyNonce);
+    recordVerifyFailure(ip, hwid);
     return res.json({ ok: false, valid: false, message: "Bind proof required. Please get a fresh key.", code: "bind_proof_missing" });
   }
   if (!bindProof || bindProof !== record.bindProof) {
+    verifyNonces.delete(verifyNonce);
+    recordVerifyFailure(ip, hwid);
     return res.json({ ok: false, valid: false, message: "Bind proof mismatch. Re-acquire key.", code: "bind_proof_mismatch" });
   }
   if (!record.hwid || record.hwid === "unbound" || record.hwid === "unbound-hwid") {
@@ -1051,10 +1144,24 @@ app.post("/api/jx/keys/verify", async (req, res) => {
   if (record.hwid !== hwid) {
     return res.json({ ok: false, valid: false, message: "Key not bound to this HWID" });
   }
-  if (record.expiresAt && record.expiresAt <= Date.now()) {
+
+  const now = Date.now();
+  if (record.expiresAt && record.expiresAt <= now) {
+    verifyNonces.delete(verifyNonce);
+    recordVerifyFailure(ip, hwid);
     return res.json({ ok: false, valid: false, message: "Key expired" });
   }
-  return res.json({ ok: true, valid: true, tier: record.tier, expiresAt: record.expiresAt });
+  // success
+  verifyNonces.delete(verifyNonce);
+  clearVerifyFailures(ip, hwid);
+  const nextNonce = issueVerifyNonce(hwid, ip);
+  return res.json({
+    ok: true,
+    valid: true,
+    tier: record.tier,
+    expiresAt: record.expiresAt,
+    nextVerifyNonce: nextNonce,
+  });
 });
 
 // Get active key for HWID
