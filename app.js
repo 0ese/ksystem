@@ -438,8 +438,24 @@ async function loadExistingKeyForHwid(hwid) {
     $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
   });
   if (rec) {
-    const record = { key: rec.key || rec._id, hwid: rec.hwid, tier: rec.tier, expiresAt: rec.expiresAt, createdAt: rec.createdAt };
+    const bindProof = rec.bindProof || crypto.randomBytes(24).toString("hex");
+    const record = {
+      key: rec.key || rec._id,
+      hwid: rec.hwid,
+      tier: rec.tier,
+      expiresAt: rec.expiresAt,
+      createdAt: rec.createdAt,
+      bindProof,
+    };
     keys.set(record.key, record);
+    // persist bindProof if newly generated
+    if (!rec.bindProof) {
+      try {
+        await dbUpsert(mongoCfg.colKeys, record.key, record);
+      } catch (e) {
+        console.warn("[DB] add bindProof failed", e.message);
+      }
+    }
     return record;
   }
   return null;
@@ -952,6 +968,7 @@ app.post("/api/jx/keys/request", async (req, res) => {
       ok: true,
       requestId: null,
       key: existing.key,
+      bindProof: existing.bindProof,
       tier: existing.tier,
       expiresAt: existing.expiresAt,
       reused: true,
@@ -991,13 +1008,14 @@ app.post("/api/jx/keys/claim", async (req, res) => {
   requests.delete(rid);
   if (useDb) dbDelete(mongoCfg.colRequests, rid);
   const record = await generateKey({ hwid, tier: "free", hours: settings.expirationHours });
-  res.json({ ok: true, key: record.key, expiresAt: record.expiresAt, tier: record.tier });
+  res.json({ ok: true, key: record.key, bindProof: record.bindProof, expiresAt: record.expiresAt, tier: record.tier });
 });
 
 // Verify key (Roblox)
 app.post("/api/jx/keys/verify", async (req, res) => {
   const hwid = (req.body.hwid || "").trim();
   const key = (req.body.key || "").trim();
+  const bindProof = (req.body.bindProof || "").trim();
 
   await cleanup();
 
@@ -1012,6 +1030,12 @@ app.post("/api/jx/keys/verify", async (req, res) => {
   }
   if (!record) {
     return res.json({ ok: false, valid: false, message: "Key not found" });
+  }
+  if (!record.bindProof) {
+    return res.json({ ok: false, valid: false, message: "Bind proof required. Please get a fresh key.", code: "bind_proof_missing" });
+  }
+  if (!bindProof || bindProof !== record.bindProof) {
+    return res.json({ ok: false, valid: false, message: "Bind proof mismatch. Re-acquire key.", code: "bind_proof_mismatch" });
   }
   if (!record.hwid || record.hwid === "unbound" || record.hwid === "unbound-hwid") {
     record.hwid = hwid;
