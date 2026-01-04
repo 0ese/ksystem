@@ -161,6 +161,9 @@ const cpWarnings = new Map(); // ip -> { count, banUntil }
 
 const REQUEST_TTL = 20 * 60 * 1000;
 const SESSION_TTL = 60 * 60 * 1000; // 1 hour
+const BAN_THRESHOLD = 5;
+const BAN_TIME_MS = 15 * 60 * 1000; // 15 minutes
+
 const BASE_URL = process.env.PUBLIC_URL || process.env.BASE_URL || "https://getjx.onrender.com";
 const LINKVERTISE_ANTI_BYPASS_TOKEN =
   process.env.LINKVERTISE_ANTI_BYPASS_TOKEN ||
@@ -185,6 +188,44 @@ function getBaseUrl(req) {
     return `${protocol}://${host}`;
   }
   return BASE_URL;
+}
+
+function getClientIp(req) {
+  const xfwd = req.headers["x-forwarded-for"];
+  if (xfwd && typeof xfwd === "string") {
+    return xfwd.split(",")[0].trim();
+  }
+  return req.ip || req.connection?.remoteAddress || "unknown";
+}
+
+function isBanned(req) {
+  const ip = getClientIp(req);
+  const entry = cpWarnings.get(ip);
+  if (entry && entry.banUntil && entry.banUntil > Date.now()) {
+    return { banned: true, banUntil: entry.banUntil, ip };
+  }
+  return { banned: false, ip };
+}
+
+function flagSuspicious(req, reason = "unknown") {
+  const { banned, ip, banUntil } = isBanned(req);
+  if (banned) return { banned: true, banUntil };
+  const entry = cpWarnings.get(ip) || { count: 0, banUntil: 0 };
+  const nextCount = entry.count + 1;
+  const next = { count: nextCount, banUntil: entry.banUntil };
+  if (nextCount >= BAN_THRESHOLD) {
+    next.banUntil = Date.now() + BAN_TIME_MS;
+  }
+  cpWarnings.set(ip, next);
+  return { banned: next.banUntil > Date.now(), banUntil: next.banUntil };
+}
+
+function enforceNoBypass(req, res) {
+  const status = isBanned(req);
+  if (status.banned) {
+    return res.status(429).send(renderBanPage(status.banUntil));
+  }
+  return null;
 }
 
 function renderBanPage(banUntil) {
@@ -488,6 +529,8 @@ app.get("/dashboard", (req, res) => {
 });
 
 app.get("/checkpoint", (req, res) => {
+  const blocked = enforceNoBypass(req, res);
+  if (blocked) return;
   const hwid = (req.query.hwid || "").trim();
   const rid = (req.query.rid || "").trim();
   const serviceParam = (req.query.service || "").toLowerCase();
@@ -588,6 +631,8 @@ app.get("/goto", async (req, res) => {
 
 // Callback after external task completes
 app.get("/callback", async (req, res) => {
+  const blocked = enforceNoBypass(req, res);
+  if (blocked) return;
   const hwid = (req.query.hwid || "").trim();
   const cpParam = Number(req.query.checkpoint || 0);
   const hash = (req.query.hash || "").trim();
@@ -612,6 +657,7 @@ app.get("/callback", async (req, res) => {
 
   if (service === "linkvertise") {
     if (!hash || !(await verifyHash(hash))) {
+      flagSuspicious(req, "linkvertise-hash-missing");
       const ridPart = sess.rid ? `&rid=${encodeURIComponent(sess.rid)}` : "";
       return res.redirect(
         `/checkpoint?hwid=${encodeURIComponent(hwid)}&cp=${expected}&service=${encodeURIComponent(service)}${ridPart}`
@@ -619,6 +665,7 @@ app.get("/callback", async (req, res) => {
     }
   } else {
     if (!hash || !sess.nonce || hash !== sess.nonce) {
+      flagSuspicious(req, "lootlabs-nonce-mismatch");
       const ridPart = sess.rid ? `&rid=${encodeURIComponent(sess.rid)}` : "";
       return res.redirect(
         `/checkpoint?hwid=${encodeURIComponent(hwid)}&cp=${expected}&service=${encodeURIComponent(service)}${ridPart}`
@@ -641,6 +688,8 @@ app.get("/callback", async (req, res) => {
 
 // Reward page: generate/show key
 app.get("/reward", async (req, res) => {
+  const blocked = enforceNoBypass(req, res);
+  if (blocked) return;
   const hwid = (req.query.hwid || "").trim();
   const rid = (req.query.rid || "").trim();
   if (!hwid) return res.redirect("/");
@@ -656,6 +705,7 @@ app.get("/reward", async (req, res) => {
   }
   if (!existing) {
     if (!sess || (sess.checkpoint || 0) < maxCheckpoint) {
+      flagSuspicious(req, "reward-bypass");
       return handleBypass(req, res, hwid);
     }
   }
@@ -920,6 +970,8 @@ app.get("/api/jx/dashboard/metrics", requireAuth, (req, res) => {
 
 // --- Key requests / Roblox bridge ---
 app.post("/api/jx/keys/request", async (req, res) => {
+  const blocked = enforceNoBypass(req, res);
+  if (blocked) return;
   const hwid = (req.body.hwid || "").trim();
   if (!hwid) return res.status(400).json({ ok: false, message: "HWID required" });
 
@@ -962,6 +1014,8 @@ app.post("/api/jx/keys/request", async (req, res) => {
 
 // Claim key after checkpoint
 app.post("/api/jx/keys/claim", async (req, res) => {
+  const blocked = enforceNoBypass(req, res);
+  if (blocked) return;
   const hwid = (req.body.hwid || "").trim();
   const rid = (req.body.requestId || "").trim();
   if (!hwid || !rid) return res.status(400).json({ ok: false, message: "HWID and requestId required" });
@@ -978,6 +1032,8 @@ app.post("/api/jx/keys/claim", async (req, res) => {
 
 // Verify key (Roblox)
 app.post("/api/jx/keys/verify", async (req, res) => {
+  const blocked = enforceNoBypass(req, res);
+  if (blocked) return;
   const hwid = (req.body.hwid || "").trim();
   const key = (req.body.key || "").trim();
 
@@ -993,6 +1049,7 @@ app.post("/api/jx/keys/verify", async (req, res) => {
     record = await fetchKeyFromDb(key);
   }
   if (!record) {
+    flagSuspicious(req, "key-not-found");
     return res.json({ ok: false, valid: false, message: "Key not found" });
   }
   if (!record.hwid || record.hwid === "unbound" || record.hwid === "unbound-hwid") {
@@ -1007,6 +1064,7 @@ app.post("/api/jx/keys/verify", async (req, res) => {
     }
   }
   if (record.hwid !== hwid) {
+    flagSuspicious(req, "hwid-mismatch");
     return res.json({ ok: false, valid: false, message: "Key not bound to this HWID" });
   }
   if (record.expiresAt && record.expiresAt <= Date.now()) {
