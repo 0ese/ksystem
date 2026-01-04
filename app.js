@@ -227,7 +227,8 @@ const BYPASS_BAN_AFTER = 3;
 const BYPASS_BAN_DURATION = 30 * 60 * 1000; // 30 minutes
 const VERIFY_FAIL_LIMIT = 6;
 const VERIFY_BAN_DURATION = 30 * 60 * 1000; // 30 minutes
-const VERIFY_NONCE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const VERIFY_NONCE_WINDOW_MS = 60 * 1000; // 60 seconds
+const ALLOW_ALL_EXECUTORS = (process.env.ALLOW_ALL_EXECUTORS || "true").toLowerCase() === "true";
 const ALLOWED_EXECUTORS = new Set(
   (process.env.ALLOWED_EXECUTORS || "Synapse X,KRNL,ScriptWare,Fluxus,Electron,Delta,Arceus X,Solara,Trigon").split(",").map((s) => s.trim())
 );
@@ -1058,20 +1059,7 @@ app.post("/api/jx/keys/request", async (req, res) => {
 
 // Claim key after checkpoint
 app.post("/api/jx/keys/claim", async (req, res) => {
-  const hwid = (req.body.hwid || "").trim();
-  const rid = (req.body.requestId || "").trim();
-  if (!hwid || !rid) return res.status(400).json({ ok: false, message: "HWID and requestId required" });
-  await cleanup();
-  const reqRec = requests.get(rid);
-  if (!reqRec || reqRec.hwid !== hwid || (reqRec.expiresAt && reqRec.expiresAt <= Date.now())) {
-    return res.status(400).json({ ok: false, message: "Request not found/expired" });
-  }
-  requests.delete(rid);
-  if (useDb) dbDelete(mongoCfg.colRequests, rid);
-  const record = await generateKey({ hwid, tier: "free", hours: settings.expirationHours });
-  const ip = resolveIp(req);
-  const verifyNonce = issueVerifyNonce(hwid, ip);
-  res.json({ ok: true, key: record.key, bindProof: record.bindProof, verifyNonce, expiresAt: record.expiresAt, tier: record.tier });
+  return res.status(403).json({ ok: false, message: "Direct claim disabled. Complete checkpoints via /checkpoint." });
 });
 
 // Verify key (Roblox)
@@ -1096,9 +1084,11 @@ app.post("/api/jx/keys/verify", async (req, res) => {
   }
 
   // executor gate
-  if (!executor || !ALLOWED_EXECUTORS.has(executor)) {
-    recordVerifyFailure(ip, hwid);
-    return res.status(400).json({ ok: false, valid: false, message: "Unsupported executor", code: "executor_blocked" });
+  if (!ALLOW_ALL_EXECUTORS) {
+    if (!executor || !ALLOWED_EXECUTORS.has(executor)) {
+      recordVerifyFailure(ip, hwid);
+      return res.status(400).json({ ok: false, valid: false, message: "Unsupported executor", code: "executor_blocked" });
+    }
   }
 
   // nonce validation
